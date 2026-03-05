@@ -14,6 +14,7 @@ class LanguageModel(nn.Module):
         Build the LanguageModel based on the config.
         """
         self.config = config
+        self.weights = None
         super().__init__()
 
     def set_weights(self, weights: Dict[str, Any]):
@@ -25,7 +26,8 @@ class LanguageModel(nn.Module):
         Parameters:
             - weights: A dictionary containing the model's weights. The structure of this dictionary will depend on how you design your model.
         """
-        raise NotImplementedError("Implement set_weights as described in assignment document")
+        self.weights = weights
+        
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """
@@ -64,3 +66,20 @@ def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
     """
     PAD_ID = 0  # Assume 0 is the padding token ID
     raise NotImplementedError("Implement collate_fn as described in assignment document")
+
+
+if __name__ == "__main__":
+    import pathlib
+    import time
+    from COL772.parta.check import read_config, read_data, read_weights, run_model, match
+
+    config = read_config(pathlib.Path("/content/COL772/parta/data/case1/config.json"))
+    input_ids, gold_outputs = read_data(pathlib.Path("/content/COL772/parta/data/case1/model_outputs"))
+    state_dict = read_weights(pathlib.Path("/content/COL772/parta/data/case1/model_weights.pth"))
+
+    model = load_model(config=config, weights=state_dict)
+    st = time.time()
+    outputs = run_model(model=model, input_ids=input_ids, vocab_size=config["vocab_size"])
+    en = time.time()
+    match(gold_outputs=gold_outputs, model_outputs=outputs)
+    print(f"Inference time: {en - st} seconds")
