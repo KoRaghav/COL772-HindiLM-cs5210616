@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Any, Dict, List
 
 
@@ -65,13 +66,45 @@ def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
     Ensure that the function takes in a batch of data and outputs a dictionary of tensors ready to be fed into the model.
     """
     PAD_ID = 0  # Assume 0 is the padding token ID
-    raise NotImplementedError("Implement collate_fn as described in assignment document")
-
+    max_len = max(len(ids) for ids in batch["input_ids"])
+    padded_inp = [F.pad(input_id, (0, max_len-len(input_id)), value=PAD_ID) for input_id in batch["input_ids"]]
+    padded_attn = [F.pad(attn, (0, max_len-len(attn)), value=PAD_ID) for attn in batch["attention_mask"]]
+    stacked_inp = torch.stack(padded_inp)
+    stacked_attn = torch.stack(padded_attn)
+    return {"input_ids": stacked_inp, "attention_mask": stacked_attn}
 
 if __name__ == "__main__":
     import pathlib
     import time
-    from COL772.parta.check import read_config, read_data, read_weights, run_model, match
+    from COL772.parta.check import read_config, read_data, read_weights, match
+
+    def run_model(model: nn.Module, input_ids: List[torch.Tensor], vocab_size: int) -> List[Dict[str, torch.Tensor]]:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+        model.eval()
+        model.to(device)
+
+        outputs = []
+        bsz = 16
+        for st in range(0, len(input_ids), bsz):
+            en = min(st + bsz, len(input_ids))
+            batch = {
+                "input_ids": [input_ids[i] for i in range(st, en)],
+                "attention_mask": [torch.ones_like(input_ids[i]) for i in range(st, en)]
+            }
+            padded_batch = collate_fn(batch)
+            padded_batch = {k: v.to(device) for k, v in padded_batch.items()}
+            with torch.no_grad():
+                logits = model(input_ids=padded_batch["input_ids"], attention_mask=padded_batch["attention_mask"])
+            logits = logits.cpu()
+            for i in range(en - st):
+                outputs.append({
+                    "logits": logits[i][:len(batch["input_ids"][i])]
+                })
+
+        return outputs
 
     config = read_config(pathlib.Path("/content/COL772/parta/data/case1/config.json"))
     input_ids, gold_outputs = read_data(pathlib.Path("/content/COL772/parta/data/case1/model_outputs"))
