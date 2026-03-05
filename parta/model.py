@@ -14,7 +14,15 @@ class LanguageModel(nn.Module):
         """
         Build the LanguageModel based on the config.
         """
-        self.config = config
+
+        self.D_MODEL = config["d_model"]
+        self.N_HEADS = config["n_heads"]
+        self.D_HEAD = self.D_MODEL / self.N_HEADS
+        self.N_LAYERS = config["n_layers"]
+        self.VOCAB_SIZE = config["vocab_size"]
+        self.MODE = config["mode"]
+        self.TAU = config.get("tau")
+
         self.weights = None
         super().__init__()
 
@@ -42,6 +50,11 @@ class LanguageModel(nn.Module):
             - A tensor of shape (batch_size, sequence_len, vocab_size) containing the logits for each token in the vocabulary.
             Logits are the raw, unnormalized scores output by the model, which can be converted to probabilities using a softmax function.
         """
+        batch_size, l = input_ids.shape
+
+        embed_layer = nn.Embedding(self.VOCAB_SIZE, self.D_MODEL, _weight=torch.transpose(self.weights["W_vocab"], 0, 1))
+        embedded = embed_layer(input_ids)
+
         raise NotImplementedError("Implement forward as described in assignment document")
 
 
