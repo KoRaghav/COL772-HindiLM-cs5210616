@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Any, Dict, List
-from dataclass import dataclass
+from dataclasses import dataclass
 
 @dataclass
 class AttentionWeights:
@@ -12,6 +12,7 @@ class AttentionWeights:
 
 class Attention(nn.Module):
     def __init__(self, d_model: int, mode: str):
+        super().__init__()
         self.d_model = d_model
         self.W_Q: torch.Tensor
         self.W_K: torch.Tensor
@@ -23,12 +24,13 @@ class Attention(nn.Module):
         self.W_V = weights.W_V
 
     def forward(self, input: torch.Tensor):
-        Q = input * self.W_Q
-        K = input * self.W_K
-        V = input * self.W_V
-        S = Q * K.t() / torch.sqrt(self.d_model)
-        Attn = F.softmax(S, axis=-1)
-        return Attn * V
+        Q = torch.matmul(input, self.W_Q.t())
+        K = torch.matmul(input, self.W_K.t())
+        V = torch.matmul(input, self.W_V.t())
+        S = torch.matmul(Q, K.reshape(K.shape[0], K.shape[2], -1))
+        S /= self.d_model
+        Attn = F.softmax(S, dim=-1)
+        return torch.matmul(Attn, V)
 
 @dataclass
 class TransformerBlockWeights:
@@ -61,10 +63,11 @@ class TransformerBlock(nn.Module):
         self.b_down: torch.Tensor
 
     def set_weights(self, weights: TransformerBlockWeights):
-        self.layernorm_1.weight = weights.gamma_1
-        self.layernorm_1.bias = weights.beta_1
-        self.layernorm_2.weight = weights.gamma_2
-        self.layernorm_2.bias = weights.beta_2
+        with torch.no_grad():
+            self.layernorm_1.weight.copy_(weights.gamma_1)
+            self.layernorm_1.bias.copy_(weights.beta_1)
+            self.layernorm_2.weight.copy_(weights.gamma_2)
+            self.layernorm_2.bias.copy_(weights.beta_2)
         
         for i in range(self.n_heads):
             self.heads[i].set_weights(weights.attention_weights[i])
@@ -77,12 +80,14 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         u = self.layernorm_1(x)
-        attn = torch.cat(att(u) for att in self.heads) * self.W_O
+        heads = [att(u) for att in self.heads]
+        heads_cat = torch.cat(heads, axis=2)
+        attn = torch.matmul(heads_cat, self.W_O)
         z1 = x + attn
         v1 = self.layernorm_2(z1)
-        v2 = v1 * self.W_up + self.b_up
+        v2 = torch.matmul(v1, self.W_up) + self.b_up
         v3 = F.gelu(v2)
-        v4 = v3 * self.W_down + self.b_down
+        v4 = torch.matmul(v3, self.W_down) + self.b_down
         z2 = z1 + v4
         return z2
 
@@ -96,6 +101,7 @@ class LanguageModel(nn.Module):
         """
         Build the LanguageModel based on the config.
         """
+        super().__init__()
 
         self.D_MODEL = config["d_model"]
         self.N_HEADS = config["n_heads"]
@@ -108,10 +114,7 @@ class LanguageModel(nn.Module):
         self.W_vocab: torch.Tensor
         self.W_devocab: torch.Tensor
         self.transformer_blocks = [TransformerBlock(self.D_MODEL, self.MODE, self.N_HEADS) for _ in range(self.N_LAYERS)]
-        self.beta_final: torch.Tensor
-        self.gamma_final: torch.Tensor
-
-        super().__init__()
+        self.layernorm_final = nn.LayerNorm(self.D_MODEL)
 
     def set_weights(self, weights: Dict[str, Any]):
         """
@@ -124,12 +127,10 @@ class LanguageModel(nn.Module):
         """
         self.W_vocab = weights["W_vocab"]
         self.W_devocab = weights["W_devocab"]
-        self.beta_final = weights["beta_final"]
-        self.gamma_final = weights["gamma_final"]
 
-        for l in range(self.N_LAYERS):
+        for l in range(1, self.N_LAYERS+1):
             attention_weights = []
-            for k in range(self.N_HEADS):
+            for k in range(1, self.N_HEADS+1):
                 attention_weights.append(AttentionWeights(weights[f"W_{l}_Q_{k}"], weights[f"W_{l}_K_{k}"], weights[f"W_{l}_V_{k}"]))
             transformer_weights = TransformerBlockWeights(
                 attention_weights,
@@ -143,7 +144,11 @@ class LanguageModel(nn.Module):
                 weights[f"b_{l}_up"],
                 weights[f"b_{l}_down"],
             )
-            self.transformer_blocks[l].set_weights(transformer_weights)
+            self.transformer_blocks[l-1].set_weights(transformer_weights)
+        
+        with torch.no_grad():
+            self.layernorm_final.weight.copy_(weights["gamma_final"])
+            self.layernorm_final.bias.copy_(weights["beta_final"])
         
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -169,7 +174,12 @@ class LanguageModel(nn.Module):
         pos_embed[:, 0::2] = pos_embed_even
         pos_embed[:, 1::2] = pos_embed_odd
 
-        x_0 = embedded + pos_embed.unsqueeze(0)
+        x = embedded + pos_embed.unsqueeze(0)
+
+        for l in range(self.N_LAYERS):
+            x = self.transformer_blocks[l](x)
+
+        x_final = self.layernorm_final(x)
 
         raise NotImplementedError("Implement forward as described in assignment document")
 
