@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+from math import sqrt
 from typing import Any, Dict, List
 from dataclasses import dataclass
 
@@ -11,24 +13,36 @@ class AttentionWeights:
     W_V: torch.Tensor
 
 class Attention(nn.Module):
-    def __init__(self, d_model: int, mode: str):
+    def __init__(self, d_model: int, mode: str, tau: float, d_head: int):
         super().__init__()
         self.d_model = d_model
-        self.W_Q: torch.Tensor
-        self.W_K: torch.Tensor
-        self.W_V: torch.Tensor
+        self.d_head = d_head
+        self.W_Q: nn.Parameter
+        self.W_K: nn.Parameter
+        self.W_V: nn.Parameter
+        self.mode = mode
+        self.tau = tau
     
     def set_weights(self, weights: AttentionWeights):
-        self.W_Q = weights.W_Q
-        self.W_K = weights.W_K
-        self.W_V = weights.W_V
+        self.W_Q = nn.Parameter(weights.W_Q)
+        self.W_K = nn.Parameter(weights.W_K)
+        self.W_V = nn.Parameter(weights.W_V)
 
-    def forward(self, input: torch.Tensor):
-        Q = torch.matmul(input, self.W_Q.t())
-        K = torch.matmul(input, self.W_K.t())
-        V = torch.matmul(input, self.W_V.t())
-        S = torch.matmul(Q, K.reshape(K.shape[0], K.shape[2], -1))
-        S /= self.d_model
+    def forward(self, input: torch.Tensor, attention_mask: torch.Tensor):
+        Q = input @ self.W_Q.t()
+        K = input @ self.W_K.t()
+        V = input @ self.W_V.t()
+        S = torch.bmm(Q, K.transpose(1, 2))
+        S /= sqrt(self.d_head)
+        if self.mode == "tanh-clipped":
+            S = self.tau * torch.tanh(S)
+        l = input.shape[1]
+        M = torch.zeros(l, l, dtype=torch.float32)
+        upper_triangle = torch.triu(torch.ones(l, l), diagonal=1).bool()
+        M = M.masked_fill(upper_triangle, -torch.inf).to(input.device)
+        S = S + M
+        attention_mask = attention_mask.unsqueeze(1)
+        S = S.masked_fill(attention_mask == 0, -torch.inf)
         Attn = F.softmax(S, dim=-1)
         return torch.matmul(Attn, V)
 
@@ -46,21 +60,22 @@ class TransformerBlockWeights:
     b_down: torch.Tensor
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, mode: str, n_heads: int):
+    def __init__(self, d_model: int, mode: str, tau: float, n_heads: int, d_head: int):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
+        self.d_head = d_head
 
-        self.layernorm_1 = nn.LayerNorm(self.d_model)
-        self.layernorm_2 = nn.LayerNorm(self.d_model)
+        self.layernorm_1 = nn.LayerNorm(self.d_model, elementwise_affine=True)
+        self.layernorm_2 = nn.LayerNorm(self.d_model, elementwise_affine=True)
 
-        self.heads = [Attention(d_model, mode) for _ in range(n_heads)]
-        self.W_O: torch.Tensor
+        self.heads = nn.ModuleList([Attention(d_model, mode, tau, d_head) for _ in range(n_heads)])
+        self.W_O: nn.Parameter
 
-        self.W_up: torch.Tensor
-        self.b_up: torch.Tensor
-        self.W_down: torch.Tensor
-        self.b_down: torch.Tensor
+        self.W_up: nn.Parameter
+        self.b_up: nn.Parameter
+        self.W_down: nn.Parameter
+        self.b_down: nn.Parameter
 
     def set_weights(self, weights: TransformerBlockWeights):
         with torch.no_grad():
@@ -71,23 +86,23 @@ class TransformerBlock(nn.Module):
         
         for i in range(self.n_heads):
             self.heads[i].set_weights(weights.attention_weights[i])
-        self.W_O = weights.W_O
+        self.W_O = nn.Parameter(weights.W_O)
 
-        self.W_up = weights.W_up
-        self.b_up = weights.b_up
-        self.W_down = weights.W_down
-        self.b_down = weights.b_down
+        self.W_up = nn.Parameter(weights.W_up)
+        self.b_up = nn.Parameter(weights.b_up)
+        self.W_down = nn.Parameter(weights.W_down)
+        self.b_down = nn.Parameter(weights.b_down)
 
-    def forward(self, x):
+    def forward(self, x, attention_mask):
         u = self.layernorm_1(x)
-        heads = [att(u) for att in self.heads]
+        heads = [att(u, attention_mask) for att in self.heads]
         heads_cat = torch.cat(heads, axis=2)
-        attn = torch.matmul(heads_cat, self.W_O)
+        attn = heads_cat @ self.W_O.t()
         z1 = x + attn
         v1 = self.layernorm_2(z1)
-        v2 = torch.matmul(v1, self.W_up) + self.b_up
+        v2 = v1 @ self.W_up + self.b_up
         v3 = F.gelu(v2)
-        v4 = torch.matmul(v3, self.W_down) + self.b_down
+        v4 = v3 @ self.W_down + self.b_down
         z2 = z1 + v4
         return z2
 
@@ -105,16 +120,16 @@ class LanguageModel(nn.Module):
 
         self.D_MODEL = config["d_model"]
         self.N_HEADS = config["n_heads"]
-        self.D_HEAD = self.D_MODEL / self.N_HEADS
+        self.D_HEAD = self.D_MODEL // self.N_HEADS
         self.N_LAYERS = config["n_layers"]
         self.VOCAB_SIZE = config["vocab_size"]
         self.MODE = config["mode"]
         self.TAU = config.get("tau")
 
-        self.W_vocab: torch.Tensor
-        self.W_devocab: torch.Tensor
-        self.transformer_blocks = [TransformerBlock(self.D_MODEL, self.MODE, self.N_HEADS) for _ in range(self.N_LAYERS)]
-        self.layernorm_final = nn.LayerNorm(self.D_MODEL)
+        self.W_vocab: nn.Parameter
+        self.W_devocab: nn.Parameter
+        self.transformer_blocks = nn.ModuleList([TransformerBlock(self.D_MODEL, self.MODE, self.TAU, self.N_HEADS, self.D_HEAD) for _ in range(self.N_LAYERS)])
+        self.layernorm_final = nn.LayerNorm(self.D_MODEL, elementwise_affine=True)
 
     def set_weights(self, weights: Dict[str, Any]):
         """
@@ -125,8 +140,8 @@ class LanguageModel(nn.Module):
         Parameters:
             - weights: A dictionary containing the model's weights. The structure of this dictionary will depend on how you design your model.
         """
-        self.W_vocab = weights["W_vocab"]
-        self.W_devocab = weights["W_devocab"]
+        self.W_vocab = nn.Parameter(weights["W_vocab"])
+        self.W_devocab = nn.Parameter(weights["W_devocab"])
 
         for l in range(1, self.N_LAYERS+1):
             attention_weights = []
@@ -150,7 +165,6 @@ class LanguageModel(nn.Module):
             self.layernorm_final.weight.copy_(weights["gamma_final"])
             self.layernorm_final.bias.copy_(weights["beta_final"])
         
-
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """
         Implement the forward pass of the model. The output should be a tensor of shape (T, |Vocab|).
@@ -163,25 +177,29 @@ class LanguageModel(nn.Module):
             - A tensor of shape (batch_size, sequence_len, vocab_size) containing the logits for each token in the vocabulary.
             Logits are the raw, unnormalized scores output by the model, which can be converted to probabilities using a softmax function.
         """
-        batch_size, l = input_ids.shape
+        _, L = input_ids.shape
 
-        embed_layer = nn.Embedding(self.VOCAB_SIZE, self.D_MODEL, _weight=torch.transpose(self.W_vocab, 0, 1))
-        embedded = embed_layer(input_ids)
+        embedded = F.embedding(input_ids, self.W_vocab.t())
 
-        pos_embed_even = torch.sin(torch.arange(l).unsqueeze(1) / (10000 ** (torch.arange(0, self.D_MODEL, 2).unsqueeze(0).expand(l, -1) / self.D_MODEL)))
-        pos_embed_odd = torch.cos(torch.arange(l).unsqueeze(1) / (10000 ** (torch.arange(1, self.D_MODEL, 2).unsqueeze(0).expand(l, -1) / self.D_MODEL)))
-        pos_embed = torch.zeros(l, self.D_MODEL)
+        pos_embed_even = torch.sin(torch.arange(L, dtype=torch.float32).unsqueeze(1) / (10000 ** (torch.arange(0, self.D_MODEL, 2, dtype=torch.float32).unsqueeze(0).expand(L, -1) / self.D_MODEL)))
+        pos_embed_odd = torch.cos(torch.arange(L, dtype=torch.float32).unsqueeze(1) / (10000 ** (torch.arange(0, self.D_MODEL, 2, dtype=torch.float32).unsqueeze(0).expand(L, -1) / self.D_MODEL)))
+        pos_embed = torch.zeros(L, self.D_MODEL)
         pos_embed[:, 0::2] = pos_embed_even
         pos_embed[:, 1::2] = pos_embed_odd
+        pos_embed = pos_embed.to(input_ids.device)
 
         x = embedded + pos_embed.unsqueeze(0)
 
         for l in range(self.N_LAYERS):
-            x = self.transformer_blocks[l](x)
+            x = self.transformer_blocks[l](x, attention_mask)
 
         x_final = self.layernorm_final(x)
 
-        raise NotImplementedError("Implement forward as described in assignment document")
+        logits = x_final @ self.W_devocab
+
+        probs = F.softmax(logits, dim=-1)
+
+        return logits
 
 
 
@@ -205,53 +223,6 @@ def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
     Ensure that the function takes in a batch of data and outputs a dictionary of tensors ready to be fed into the model.
     """
     PAD_ID = 0  # Assume 0 is the padding token ID
-    max_len = max(len(ids) for ids in batch["input_ids"])
-    padded_inp = [F.pad(input_id, (0, max_len-len(input_id)), value=PAD_ID) for input_id in batch["input_ids"]]
-    padded_attn = [F.pad(attn, (0, max_len-len(attn)), value=PAD_ID) for attn in batch["attention_mask"]]
-    stacked_inp = torch.stack(padded_inp)
-    stacked_attn = torch.stack(padded_attn)
-    return {"input_ids": stacked_inp, "attention_mask": stacked_attn}
-
-if __name__ == "__main__":
-    import pathlib
-    import time
-    from COL772.parta.check import read_config, read_data, read_weights, match
-
-    def run_model(model: nn.Module, input_ids: List[torch.Tensor], vocab_size: int) -> List[Dict[str, torch.Tensor]]:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-        model.eval()
-        model.to(device)
-
-        outputs = []
-        bsz = 16
-        for st in range(0, len(input_ids), bsz):
-            en = min(st + bsz, len(input_ids))
-            batch = {
-                "input_ids": [input_ids[i] for i in range(st, en)],
-                "attention_mask": [torch.ones_like(input_ids[i]) for i in range(st, en)]
-            }
-            padded_batch = collate_fn(batch)
-            padded_batch = {k: v.to(device) for k, v in padded_batch.items()}
-            with torch.no_grad():
-                logits = model(input_ids=padded_batch["input_ids"], attention_mask=padded_batch["attention_mask"])
-            logits = logits.cpu()
-            for i in range(en - st):
-                outputs.append({
-                    "logits": logits[i][:len(batch["input_ids"][i])]
-                })
-
-        return outputs
-
-    config = read_config(pathlib.Path("/content/COL772/parta/data/case1/config.json"))
-    input_ids, gold_outputs = read_data(pathlib.Path("/content/COL772/parta/data/case1/model_outputs"))
-    state_dict = read_weights(pathlib.Path("/content/COL772/parta/data/case1/model_weights.pth"))
-
-    model = load_model(config=config, weights=state_dict)
-    st = time.time()
-    outputs = run_model(model=model, input_ids=input_ids, vocab_size=config["vocab_size"])
-    en = time.time()
-    match(gold_outputs=gold_outputs, model_outputs=outputs)
-    print(f"Inference time: {en - st} seconds")
+    input_ids = pad_sequence(batch["input_ids"], batch_first=True, padding_value=PAD_ID)
+    attention_mask = pad_sequence(batch["attention_mask"], batch_first=True)
+    return {"input_ids": input_ids, "attention_mask": attention_mask}
