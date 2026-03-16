@@ -1,5 +1,14 @@
 from pathlib import Path
+import time
+
 UNK = '<|UNK|>'
+PAD = '<|PAD|>'
+EOS = '<|EOS|>'
+SOS = '<|SOS|>'
+SPECIAL_TOKENS = [UNK, PAD, EOS, SOS]
+VOCAB_SIZE = 50_000
+TIME = (2*60 + 30) * 60
+
 class Token:
     leaf: bool
     val: str
@@ -35,13 +44,21 @@ class BPETokenizer:
     vocab: list[Token]
     mapping: dict[Token, int]
     base_size: int
+    special_tokens: set[str]
 
-    def __init__(self, vocab_size=1000, special_tokens=None):
+    def __init__(self, vocab_size=VOCAB_SIZE, special_tokens=None):
         self.vocab_size = vocab_size
         self.vocab = []
+        self.special_tokens = SPECIAL_TOKENS
+        if special_tokens is not None:
+            for t in special_tokens:
+                if t not in self.special_tokens:
+                    self.special_tokens.append(t)
 
     def train(self, corpus):
-        base_vocab = {UNK: 0}
+        start_time = time.time()
+
+        base_vocab = {t: 0 for t in self.special_tokens}
         for s in corpus:
             for c in s:
                 base_vocab[c] = base_vocab.get(c, 0) + 1
@@ -65,7 +82,7 @@ class BPETokenizer:
                         pair_locations[p] = set()
                     pair_locations[p].add(w)
 
-        while len(self.vocab) < self.vocab_size:
+        while len(self.vocab) < self.vocab_size and time.time() < start_time + TIME:
             freq_pair, _ = max(pairs.items(), key=lambda x: x[1])
             for w in set(pair_locations[freq_pair]):
                 for i in range(len(w) - 1):
@@ -105,11 +122,27 @@ class BPETokenizer:
         words = text.split()
         encoded_words = []
         for idx in range(len(words)):
-            w_ = words[idx]
-            w = tuple(Token(c) for c in w_)
-            for i in range(len(w)):
-                if w[i] not in self.mapping:
-                    w[i] = Token(UNK)
+            w = []
+            word = words[idx]
+            i = 0
+            while i < len(word):
+                st_found = False
+                for st in self.special_tokens:
+                    if word[i:i+len(st)] == st:
+                        w.append(Token(st))
+                        i += len(st)
+                        st_found = True
+                        break
+                if st_found:
+                    continue
+                t = Token(word[i])
+                if t not in self.mapping:
+                    w.append(Token(UNK))
+                    i += 1
+                else:
+                    w.append(t)
+                    i += 1
+            w = tuple(w)
             modified = True
             while modified:
                 modified = False
@@ -178,7 +211,7 @@ class BPETokenizer:
                 self.mapping[token] = i - 1
             
     def get_vocab_size(self):
-        return self.vocab_size
+        return len(self.vocab)
     
     def get_unk_id(self):
-        return 0
+        return self.mapping[Token(UNK)]
