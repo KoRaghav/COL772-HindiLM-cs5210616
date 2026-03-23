@@ -17,9 +17,9 @@ class Attention(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.d_head = d_head
-        self.W_Q: nn.Parameter
-        self.W_K: nn.Parameter
-        self.W_V: nn.Parameter
+        self.W_Q = nn.Parameter(torch.randn(d_head, d_model))
+        self.W_K = nn.Parameter(torch.randn(d_head, d_model))
+        self.W_V = nn.Parameter(torch.randn(d_head, d_model))
         self.mode = mode
         self.tau = tau
     
@@ -70,12 +70,12 @@ class TransformerBlock(nn.Module):
         self.layernorm_2 = nn.LayerNorm(self.d_model, elementwise_affine=True)
 
         self.heads = nn.ModuleList([Attention(d_model, mode, tau, d_head) for _ in range(n_heads)])
-        self.W_O: nn.Parameter
+        self.W_O = nn.Parameter(torch.randn(d_model, d_model))
 
-        self.W_up: nn.Parameter
-        self.b_up: nn.Parameter
-        self.W_down: nn.Parameter
-        self.b_down: nn.Parameter
+        self.W_up = nn.Parameter(torch.randn(d_model, n_heads*d_model))
+        self.b_up = nn.Parameter(torch.zeros(n_heads*d_model))
+        self.W_down = nn.Parameter(torch.randn(n_heads*d_model, d_model))
+        self.b_down = nn.Parameter(torch.zeros(d_model))
 
     def set_weights(self, weights: TransformerBlockWeights):
         with torch.no_grad():
@@ -126,8 +126,8 @@ class LanguageModel(nn.Module):
         self.MODE = config["mode"]
         self.TAU = config.get("tau")
 
-        self.W_vocab: nn.Parameter
-        self.W_devocab: nn.Parameter
+        self.W_vocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE))
+        self.W_devocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE))
         self.transformer_blocks = nn.ModuleList([TransformerBlock(self.D_MODEL, self.MODE, self.TAU, self.N_HEADS, self.D_HEAD) for _ in range(self.N_LAYERS)])
         self.layernorm_final = nn.LayerNorm(self.D_MODEL, elementwise_affine=True)
 
