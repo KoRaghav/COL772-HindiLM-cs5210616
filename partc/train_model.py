@@ -55,9 +55,11 @@ def main(args):
 
     dataset = HindiDataset(encoded_corpus)
 
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+
     model = LanguageModel(config)
 
-    loss = nn.CrossEntropyLoss()
+    lossCriterion = nn.CrossEntropyLoss(ignore_index=0)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
             
