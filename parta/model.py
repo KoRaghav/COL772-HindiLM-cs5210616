@@ -13,38 +13,36 @@ class AttentionWeights:
     W_V: torch.Tensor
 
 class Attention(nn.Module):
-    def __init__(self, d_model: int, mode: str, tau: float, d_head: int):
+    def __init__(self, d_model: int, n_heads: int, d_head: int, mode: str, tau: float):
         super().__init__()
         self.d_model = d_model
+        self.n_heads = n_heads
         self.d_head = d_head
-        self.W_Q = nn.Parameter(torch.randn(d_head, d_model) / sqrt(d_model))
-        self.W_K = nn.Parameter(torch.randn(d_head, d_model) / sqrt(d_model))
-        self.W_V = nn.Parameter(torch.randn(d_head, d_model) / sqrt(d_model))
         self.mode = mode
         self.tau = tau
-    
-    def set_weights(self, weights: AttentionWeights):
-        self.W_Q = nn.Parameter(weights.W_Q)
-        self.W_K = nn.Parameter(weights.W_K)
-        self.W_V = nn.Parameter(weights.W_V)
+        
+        self.W_Q = nn.Parameter(torch.randn(n_heads * d_head, d_model) / sqrt(d_model))
+        self.W_K = nn.Parameter(torch.randn(n_heads * d_head, d_model) / sqrt(d_model))
+        self.W_V = nn.Parameter(torch.randn(n_heads * d_head, d_model) / sqrt(d_model))
 
     def forward(self, input: torch.Tensor, attention_mask: torch.Tensor):
-        Q = input @ self.W_Q.t()
-        K = input @ self.W_K.t()
-        V = input @ self.W_V.t()
-        S = torch.bmm(Q, K.transpose(1, 2))
-        S /= sqrt(self.d_head)
+        B, L, D = input.shape
+        q = F.linear(input, self.W_Q)
+        k = F.linear(input, self.W_K)
+        v = F.linear(input, self.W_V)
+        q = q.view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        k = k.view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        v = v.view(B, L, self.n_heads, self.d_head).transpose(1, 2)
+        S = torch.matmul(q, k.transpose(-2, -1)) / sqrt(self.d_head)
         if self.mode == "tanh-clipped":
             S = self.tau * torch.tanh(S)
-        l = input.shape[1]
-        M = torch.zeros(l, l, dtype=torch.float32)
-        upper_triangle = torch.triu(torch.ones(l, l), diagonal=1).bool()
-        M = M.masked_fill(upper_triangle, -torch.inf).to(input.device)
-        S = S + M
-        attention_mask = attention_mask.unsqueeze(1)
-        S = S.masked_fill(attention_mask == 0, -1e9)
-        Attn = F.softmax(S, dim=-1)
-        return torch.matmul(Attn, V)
+        upper_triangle = torch.triu(torch.ones(L, L, device=input.device), diagonal=1).bool()
+        S = S.masked_fill(upper_triangle.unsqueeze(0).unsqueeze(0), -1e9)
+        S = S.masked_fill(attention_mask.unsqueeze(1).unsqueeze(2) == 0, -1e9)
+        attn = F.softmax(S, dim=-1)
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).reshape(B, L, -1)
+        return out
 
 @dataclass
 class TransformerBlockWeights:
@@ -69,7 +67,7 @@ class TransformerBlock(nn.Module):
         self.layernorm_1 = nn.LayerNorm(self.d_model, elementwise_affine=True)
         self.layernorm_2 = nn.LayerNorm(self.d_model, elementwise_affine=True)
 
-        self.heads = nn.ModuleList([Attention(d_model, mode, tau, d_head) for _ in range(n_heads)])
+        self.attention = Attention(d_model, n_heads, d_head, mode, tau)
         self.W_O = nn.Parameter(torch.randn(d_model, n_heads * d_head) / sqrt(n_heads * d_head))
 
         self.W_up = nn.Parameter(torch.randn(d_model, 4 * d_model) / sqrt(d_model))
@@ -77,27 +75,10 @@ class TransformerBlock(nn.Module):
         self.W_down = nn.Parameter(torch.randn(4 * d_model, d_model) / sqrt(4 * d_model))
         self.b_down = nn.Parameter(torch.zeros(d_model))
 
-    def set_weights(self, weights: TransformerBlockWeights):
-        with torch.no_grad():
-            self.layernorm_1.weight.copy_(weights.gamma_1)
-            self.layernorm_1.bias.copy_(weights.beta_1)
-            self.layernorm_2.weight.copy_(weights.gamma_2)
-            self.layernorm_2.bias.copy_(weights.beta_2)
-        
-        for i in range(self.n_heads):
-            self.heads[i].set_weights(weights.attention_weights[i])
-        self.W_O = nn.Parameter(weights.W_O)
-
-        self.W_up = nn.Parameter(weights.W_up)
-        self.b_up = nn.Parameter(weights.b_up)
-        self.W_down = nn.Parameter(weights.W_down)
-        self.b_down = nn.Parameter(weights.b_down)
-
     def forward(self, x, attention_mask):
         u = self.layernorm_1(x)
-        heads = [att(u, attention_mask) for att in self.heads]
-        heads_cat = torch.cat(heads, axis=2)
-        attn = heads_cat @ self.W_O.t()
+        attn = self.attention(u, attention_mask)
+        attn = attn @ self.W_O.t()
         z1 = x + attn
         v1 = self.layernorm_2(z1)
         v2 = v1 @ self.W_up + self.b_up
