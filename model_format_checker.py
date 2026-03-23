@@ -1,16 +1,18 @@
 from partb.bpe_tokenizer import BPETokenizer
 from parta.model import LanguageModel, collate_fn
 import torch
+from partc.train_model import config
 
 print("This script checks whether your model and tokenizer are compatible with the expected format for the assignment.")
 print("Make sure to implement the load_model_and_tokenizer function to load your trained model and tokenizer from the checkpoint directory, and ensure that your model and tokenizer are compatible with the check_format function.")
 
 def load_model_and_tokenizer(model_path, tokenizer_path):
-    """
-    CHANGE THIS FUNCTION TO LOAD YOUR TRAINED MODEL AND TOKENIZER FROM THE CHECKPOINT DIRECTORY.
-    """
-    raise NotImplementedError("You need to implement the load_model_and_tokenizer function to load your trained model and tokenizer from the checkpoint directory.")
-
+    tokenizer = BPETokenizer()
+    tokenizer.load(tokenizer_path)
+    config["vocab_size"] = tokenizer.get_vocab_size()
+    model = LanguageModel(config)
+    model.load_state_dict(torch.load(model_path, weights_only=True))
+    return model, tokenizer
 
 def check_format(model, tokenizer, texts):
     """

@@ -17,9 +17,9 @@ class Attention(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.d_head = d_head
-        self.W_Q = nn.Parameter(torch.randn(d_head, d_model))
-        self.W_K = nn.Parameter(torch.randn(d_head, d_model))
-        self.W_V = nn.Parameter(torch.randn(d_head, d_model))
+        self.W_Q = nn.Parameter(torch.randn(d_head, d_model) / sqrt(d_model))
+        self.W_K = nn.Parameter(torch.randn(d_head, d_model) / sqrt(d_model))
+        self.W_V = nn.Parameter(torch.randn(d_head, d_model) / sqrt(d_model))
         self.mode = mode
         self.tau = tau
     
@@ -42,7 +42,7 @@ class Attention(nn.Module):
         M = M.masked_fill(upper_triangle, -torch.inf).to(input.device)
         S = S + M
         attention_mask = attention_mask.unsqueeze(1)
-        S = S.masked_fill(attention_mask == 0, -torch.inf)
+        S = S.masked_fill(attention_mask == 0, -1e9)
         Attn = F.softmax(S, dim=-1)
         return torch.matmul(Attn, V)
 
@@ -70,11 +70,11 @@ class TransformerBlock(nn.Module):
         self.layernorm_2 = nn.LayerNorm(self.d_model, elementwise_affine=True)
 
         self.heads = nn.ModuleList([Attention(d_model, mode, tau, d_head) for _ in range(n_heads)])
-        self.W_O = nn.Parameter(torch.randn(d_model, d_model))
+        self.W_O = nn.Parameter(torch.randn(d_model, n_heads * d_head) / sqrt(n_heads * d_head))
 
-        self.W_up = nn.Parameter(torch.randn(d_model, n_heads*d_model))
-        self.b_up = nn.Parameter(torch.zeros(n_heads*d_model))
-        self.W_down = nn.Parameter(torch.randn(n_heads*d_model, d_model))
+        self.W_up = nn.Parameter(torch.randn(d_model, 4 * d_model) / sqrt(d_model))
+        self.b_up = nn.Parameter(torch.zeros(4 * d_model))
+        self.W_down = nn.Parameter(torch.randn(4 * d_model, d_model) / sqrt(4 * d_model))
         self.b_down = nn.Parameter(torch.zeros(d_model))
 
     def set_weights(self, weights: TransformerBlockWeights):
@@ -126,8 +126,8 @@ class LanguageModel(nn.Module):
         self.MODE = config["mode"]
         self.TAU = config.get("tau")
 
-        self.W_vocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE))
-        self.W_devocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE))
+        self.W_vocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE) / sqrt(self.D_MODEL))
+        self.W_devocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE) / sqrt(self.D_MODEL))
         self.transformer_blocks = nn.ModuleList([TransformerBlock(self.D_MODEL, self.MODE, self.TAU, self.N_HEADS, self.D_HEAD) for _ in range(self.N_LAYERS)])
         self.layernorm_final = nn.LayerNorm(self.D_MODEL, elementwise_affine=True)
 
@@ -197,9 +197,7 @@ class LanguageModel(nn.Module):
 
         logits = x_final @ self.W_devocab
 
-        probs = F.softmax(logits, dim=-1)
-
-        return probs
+        return logits
 
 
 
