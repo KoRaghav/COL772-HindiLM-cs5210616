@@ -172,7 +172,7 @@ class BPETokenizer:
             encoded_sentence.extend([self.mapping[t] for t in w])
             encoded_sentence.append(self.mapping[Token(' ')])
         encoded_sentence = encoded_sentence[:-1]
-        return encoded_sentence
+        return [self.mapping[Token(SOS)]] + encoded_sentence + [self.mapping[Token(EOS)]]
     
     def decode(self, token_ids):
         expanded_tokens = []
@@ -215,3 +215,9 @@ class BPETokenizer:
     
     def get_unk_id(self):
         return self.mapping[Token(UNK)]
+
+    def get_sos_id(self):
+        return self.mapping[Token(SOS)]
+
+    def get_eos_id(self):
+        return self.mapping[Token(EOS)]

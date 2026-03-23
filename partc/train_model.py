@@ -27,12 +27,8 @@ config = {
 class HindiDataset(Dataset):
     def __init__(self, corpus, tokenizer, max_length=MAX_LENGTH):
         self.data = []
-        sos_id = tokenizer.mapping[Token(SOS)]
-        eos_id = tokenizer.mapping[Token(EOS)]
-        
         for text in corpus:
-            seq = [sos_id] + tokenizer.encode(text) + [eos_id]
-            
+            seq = tokenizer.encode(text)
             if len(seq) > 1:
                 if len(seq) > max_length + 1:
                     seq = seq[:max_length + 1]
@@ -54,8 +50,6 @@ def main(args):
     tokenizer.load(args.tokenizer_path)
     config['vocab_size'] = tokenizer.get_vocab_size()
     print(f"Tokenizer loaded from {args.tokenizer_path}.")
-
-    encoded_corpus = [tokenizer.encode(s) for s in corpus]
 
     dataset = HindiDataset(corpus, tokenizer)
 
