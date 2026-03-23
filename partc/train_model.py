@@ -1,6 +1,6 @@
 # YOUR TOKENIZER AND MODEL from PART A AND PART B RESPECTIVELY
 # If you wish to change their code, please do so in their respective files under parta/ and partb/ directories.
-from partb.bpe_tokenizer import BPETokenizer, Token, SOS, EOS
+from partb.bpe_tokenizer import BPETokenizer
 from parta.model import LanguageModel
 # You can also create additional files in this directory and import them here if needed.
 # For example, the line below import a dummy function from utils.py file.
@@ -12,15 +12,19 @@ from torch.utils.data import Dataset, DataLoader
 # Finally, treat this as your FINAL MODEL TRAINING SCRIPT. Do not perform hyperparameter tuning here.
 # You can create separate scripts for hyperparameter tuning if needed.
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 NUM_EPOCHS = 100
-BATCH_SIZE = 16
+BATCH_SIZE = 64
 MAX_LENGTH = 128
+
+LIMIT_TRAIN = 100000
 
 config = {
     "d_model": 128,
     "n_heads": 4,
     "d_head": 32,
-    "n_layers": 8,
+    "n_layers": 6,
     "mode": "standard"
 }
 
@@ -53,11 +57,18 @@ def main(args):
 
     dataset = HindiDataset(corpus, tokenizer)
 
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+    loader = DataLoader(
+        dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True, 
+        collate_fn=collate_fn,
+        pin_memory=(device.type == 'cuda'),
+        num_workers=2
+    )
 
-    model = LanguageModel(config)
+    model = LanguageModel(config).to(device)
 
-    lossCriterion = nn.CrossEntropyLoss(ignore_index=0)
+    lossCriterion = nn.CrossEntropyLoss(ignore_index=0).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
             
@@ -65,6 +76,7 @@ def main(args):
         total_loss = 0
 
         for input_ids, targets, mask in loader:
+            input_ids, targets, mask = input_ids.to(device), targets.to(device), mask.to(device)
             optimizer.zero_grad()
             logits = model(input_ids, mask)
             loss = lossCriterion(logits.reshape(-1, config['vocab_size']), targets.reshape(-1))
