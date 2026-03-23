@@ -206,3 +206,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .vscode/*
+
+data/train_test.txt
+model.pth
+*.ipynb
+tokens.txt
