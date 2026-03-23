@@ -199,7 +199,7 @@ class LanguageModel(nn.Module):
 
         probs = F.softmax(logits, dim=-1)
 
-        return logits
+        return probs
 
 
 
