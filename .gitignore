@@ -209,5 +209,6 @@ __marimo__/
 
 data/train_test.txt
 model.pth
+model.pt
 *.ipynb
 tokens.txt

@@ -1,5 +1,6 @@
 # YOUR TOKENIZER AND MODEL from PART A AND PART B RESPECTIVELY
 # If you wish to change their code, please do so in their respective files under parta/ and partb/ directories.
+from pathlib import Path
 from partb.bpe_tokenizer import BPETokenizer
 from parta.model import LanguageModel
 # You can also create additional files in this directory and import them here if needed.
@@ -8,6 +9,7 @@ from .utils import collate_fn
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+import time
 # You can structure your code as you see fit as long as the CLI works as specified.
 # Finally, treat this as your FINAL MODEL TRAINING SCRIPT. Do not perform hyperparameter tuning here.
 # You can create separate scripts for hyperparameter tuning if needed.
@@ -19,6 +21,8 @@ BATCH_SIZE = 64
 MAX_LENGTH = 128
 
 LIMIT_TRAIN = 100000
+TIME = 5*60*60
+
 
 config = {
     "d_model": 128,
@@ -45,10 +49,15 @@ class HindiDataset(Dataset):
         return self.data[idx]
 
 def main(args):
+    startTime = time.time()
     corpus = []
     with open(args.train_path, 'r', encoding='utf-8') as f:
+        i = 0
         for line in f:
             corpus.append(line.strip())
+            i += 1
+            if i > LIMIT_TRAIN:
+                break
 
     tokenizer = BPETokenizer()
     tokenizer.load(args.tokenizer_path)
@@ -85,7 +94,10 @@ def main(args):
             total_loss += loss.item()
         
         print(f"Epoch {epoch}: loss: {total_loss}")
-        torch.save(model.state_dict(), args.output_model_path)
+        if time.time() > startTime + TIME:
+            break
+
+    torch.save(model.state_dict(), Path(args.output_model_path) / 'model.pt')
 
 
 if __name__ == '__main__':
