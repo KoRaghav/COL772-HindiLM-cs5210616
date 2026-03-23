@@ -1,7 +1,6 @@
 # YOUR TOKENIZER AND MODEL from PART A AND PART B RESPECTIVELY
 # If you wish to change their code, please do so in their respective files under parta/ and partb/ directories.
-from pathlib import Path
-from partb.bpe_tokenizer import BPETokenizer
+from partb.bpe_tokenizer import BPETokenizer, Token, SOS, EOS
 from parta.model import LanguageModel
 # You can also create additional files in this directory and import them here if needed.
 # For example, the line below import a dummy function from utils.py file.
@@ -13,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 # Finally, treat this as your FINAL MODEL TRAINING SCRIPT. Do not perform hyperparameter tuning here.
 # You can create separate scripts for hyperparameter tuning if needed.
 
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 BATCH_SIZE = 16
 MAX_LENGTH = 128
 
@@ -26,9 +25,14 @@ config = {
 }
 
 class HindiDataset(Dataset):
-    def __init__(self, encoded_corpus, max_length=MAX_LENGTH):
+    def __init__(self, corpus, tokenizer, max_length=MAX_LENGTH):
         self.data = []
-        for seq in encoded_corpus:
+        sos_id = tokenizer.mapping[Token(SOS)]
+        eos_id = tokenizer.mapping[Token(EOS)]
+        
+        for text in corpus:
+            seq = [sos_id] + tokenizer.encode(text) + [eos_id]
+            
             if len(seq) > 1:
                 if len(seq) > max_length + 1:
                     seq = seq[:max_length + 1]
@@ -53,7 +57,7 @@ def main(args):
 
     encoded_corpus = [tokenizer.encode(s) for s in corpus]
 
-    dataset = HindiDataset(encoded_corpus)
+    dataset = HindiDataset(corpus, tokenizer)
 
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
 
