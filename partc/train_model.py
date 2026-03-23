@@ -5,10 +5,10 @@ from partb.bpe_tokenizer import BPETokenizer
 from parta.model import LanguageModel
 # You can also create additional files in this directory and import them here if needed.
 # For example, the line below import a dummy function from utils.py file.
-# from .utils import dummy_function  # Replace with actual utility functions as needed
+from .utils import collate_fn
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 # You can structure your code as you see fit as long as the CLI works as specified.
 # Finally, treat this as your FINAL MODEL TRAINING SCRIPT. Do not perform hyperparameter tuning here.
 # You can create separate scripts for hyperparameter tuning if needed.
@@ -16,6 +16,14 @@ from torch.utils.data import Dataset
 NUM_EPOCHS = 10
 BATCH_SIZE = 16
 MAX_LENGTH = 128
+
+config = {
+    "d_model": 128,
+    "n_heads": 4,
+    "d_head": 32,
+    "n_layers": 8,
+    "mode": "standard"
+}
 
 class HindiDataset(Dataset):
     def __init__(self, encoded_corpus, max_length=MAX_LENGTH):
@@ -38,16 +46,9 @@ def main(args):
         for line in f:
             corpus.append(line.strip())
 
-    config = {
-        "d_model": 128,
-        "n_heads": 4,
-        "d_head": 32,
-        "n_layers": 8,
-        "vocab_size": 50000,
-        "mode": "standard"
-    }
-    tokenizer = BPETokenizer(config['vocab_size'])
+    tokenizer = BPETokenizer()
     tokenizer.load(args.tokenizer_path)
+    config['vocab_size'] = tokenizer.get_vocab_size()
     print(f"Tokenizer loaded from {args.tokenizer_path}.")
 
     encoded_corpus = [tokenizer.encode(s) for s in corpus]
@@ -60,7 +61,19 @@ def main(args):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
             
+    for epoch in range(1, NUM_EPOCHS+1):
+        total_loss = 0
 
+        for input_ids, targets, mask in loader:
+            optimizer.zero_grad()
+            logits = model(input_ids, mask)
+            loss = lossCriterion(logits.reshape(-1, config['vocab_size']), targets.reshape(-1))
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        
+        print(f"Epoch {epoch}: loss: {total_loss}")
+        torch.save(model.state_dict(), args.output_model_path)
 
 
 if __name__ == '__main__':
