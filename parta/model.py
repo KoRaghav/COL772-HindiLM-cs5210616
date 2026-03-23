@@ -111,6 +111,17 @@ class LanguageModel(nn.Module):
         self.W_devocab = nn.Parameter(torch.randn(self.D_MODEL, self.VOCAB_SIZE) / sqrt(self.D_MODEL))
         self.transformer_blocks = nn.ModuleList([TransformerBlock(self.D_MODEL, self.MODE, self.TAU, self.N_HEADS, self.D_HEAD) for _ in range(self.N_LAYERS)])
         self.layernorm_final = nn.LayerNorm(self.D_MODEL, elementwise_affine=True)
+        
+        self.max_seq_len = 512 
+        self.register_buffer('pos_embed', self._get_pos_embed(self.max_seq_len, self.D_MODEL))
+
+    def _get_pos_embed(self, L, D):
+        pe = torch.zeros(L, D)
+        position = torch.arange(0, L, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, D, 2).float() * (-torch.log(torch.tensor(10000.0)) / D))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        return pe.unsqueeze(0)
 
     def set_weights(self, weights: Dict[str, Any]):
         """
@@ -162,14 +173,10 @@ class LanguageModel(nn.Module):
 
         embedded = F.embedding(input_ids, self.W_vocab.t())
 
-        pos_embed_even = torch.sin(torch.arange(L, dtype=torch.float32).unsqueeze(1) / (10000 ** (torch.arange(0, self.D_MODEL, 2, dtype=torch.float32).unsqueeze(0).expand(L, -1) / self.D_MODEL)))
-        pos_embed_odd = torch.cos(torch.arange(L, dtype=torch.float32).unsqueeze(1) / (10000 ** (torch.arange(0, self.D_MODEL, 2, dtype=torch.float32).unsqueeze(0).expand(L, -1) / self.D_MODEL)))
-        pos_embed = torch.zeros(L, self.D_MODEL)
-        pos_embed[:, 0::2] = pos_embed_even
-        pos_embed[:, 1::2] = pos_embed_odd
-        pos_embed = pos_embed.to(input_ids.device)
-
-        x = embedded + pos_embed.unsqueeze(0)
+        if L > self.pos_embed.size(1):
+             self.register_buffer('pos_embed', self._get_pos_embed(L, self.D_MODEL))
+        
+        x = embedded + self.pos_embed[:, :L, :]
 
         for l in range(self.N_LAYERS):
             x = self.transformer_blocks[l](x, attention_mask)
